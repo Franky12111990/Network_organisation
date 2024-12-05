@@ -1,0 +1,121 @@
+terraform {
+  required_providers {
+    yandex = {
+      source  = "yandex-cloud/yandex"
+      version = "~> 0.84.0"
+    }
+  }
+}
+
+provider "yandex" {
+  token     = var.token
+  cloud_id  = var.cloud_id
+  folder_id = var.folder_id
+}
+
+# Создание VPC
+resource "yandex_vpc_network" "vpc" {
+  name = "vpc-network"
+}
+
+# Публичная подсеть
+resource "yandex_vpc_subnet" "public_subnet" {
+  name           = "public"
+  zone           = var.zone
+  network_id     = yandex_vpc_network.vpc.id
+  v4_cidr_blocks = [var.network_cidr_public]
+}
+
+# Приватная подсеть
+resource "yandex_vpc_subnet" "private_subnet" {
+  name           = "private"
+  zone           = var.zone
+  network_id     = yandex_vpc_network.vpc.id
+  v4_cidr_blocks = [var.network_cidr_private]
+}
+
+# NAT-инстанс
+resource "yandex_compute_instance" "nat_instance" {
+  name = var.nat_instance_name
+
+  resources {
+    cores  = var.vm_resources.cores
+    memory = var.vm_resources.memory
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.image_id_nat
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.public_subnet.id
+    nat       = false
+    ip_address = var.nat_ip
+  }
+
+  metadata = {
+    user-data = file("nat-config.yaml")
+  }
+}
+
+# Виртуалка в публичной подсети
+resource "yandex_compute_instance" "vm_public" {
+  name = var.vm_public_name
+
+  resources {
+    cores  = var.vm_resources.cores
+    memory = var.vm_resources.memory
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.image_id_vm
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.public_subnet.id
+    nat       = true
+  }
+}
+
+# Маршрутная таблица для приватной подсети
+resource "yandex_vpc_route_table" "private_route_table" {
+  network_id = yandex_vpc_network.vpc.id
+  static_route {
+    destination_prefix = "0.0.0.0/0"
+    next_hop_address   = var.nat_ip
+  }
+}
+
+resource "yandex_vpc_subnet" "private_subnet_with_route" {
+  depends_on      = [yandex_vpc_route_table.private_route_table]
+  name            = "private-with-route"
+  zone            = var.zone
+  network_id      = yandex_vpc_network.vpc.id
+  v4_cidr_blocks  = [var.network_cidr_private]
+  route_table_id  = yandex_vpc_route_table.private_route_table.id
+}
+
+# Виртуалка в приватной подсети
+resource "yandex_compute_instance" "vm_private" {
+  name = var.vm_private_name
+
+  resources {
+    cores  = var.vm_resources.cores
+    memory = var.vm_resources.memory
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.image_id_vm
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.private_subnet_with_route.id
+  }
+}
+
